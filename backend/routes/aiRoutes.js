@@ -1,8 +1,10 @@
 const express = require('express')
 const router = express.Router()
-const axios = require('axios')
+const { GoogleGenerativeAI } = require('@google/generative-ai')
 const protect = require('../middleware/auth')
 require('dotenv').config()
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
 
 
 router.post('/review', protect, async (req, res) => {
@@ -29,33 +31,18 @@ Never give away the answer or suggest improvements directly.
 Just ask one question, nothing else. No greeting, no explanation.`
 
     try {
-        const response = await axios.post(
-            'https://api.anthropic.com/v1/messages',
-            {
-                model: 'claude-sonnet-4-20250514',
-                max_tokens: 150,
-                messages: [
-                    {
-                        role: 'user',
-                        content: prompt
-                    }
-                ]
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-api-key': process.env.CLAUDE_API_KEY,
-                    'anthropic-version': '2023-06-01'
-                }
-            }
-        )
+        
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
 
-        const question = response.data.content[0].text
+        const result = await model.generateContent(prompt)
+        const response = await result.response
+        const question = response.text()
 
         res.json({ question })
 
     } catch (err) {
         console.log('ai review error:', err.message)
+        console.log('gemini error details:', err)
         res.status(500).json({ message: 'something went wrong with ai review' })
     }
 })
