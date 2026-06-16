@@ -3,11 +3,18 @@ const router = express.Router()
 const axios = require('axios')
 require('dotenv').config()
 
-const languageIds = {
-    javascript: 63,
-    python: 71,
-    java: 62,
-    cpp: 54
+const languageMap = {
+    javascript: 'javascript',
+    python: 'python',
+    java: 'java',
+    cpp: 'cpp'
+}
+
+const fileNames = {
+    javascript: 'main.js',
+    python: 'main.py',
+    java: 'Main.java',
+    cpp: 'main.cpp'
 }
 
 
@@ -20,76 +27,38 @@ router.post('/', async (req, res) => {
         return res.status(400).json({ message: 'code and language are required' })
     }
 
-    const langId = languageIds[language]
-    if (!langId) {
+    const glotLanguage = languageMap[language]
+    if (!glotLanguage) {
         return res.status(400).json({ message: 'unsupported language' })
     }
 
     try {
-        const submitResponse = await axios.post(
-            `${process.env.JUDGE0_URL}/submissions`,
+        const response = await axios.post(
+            `https://glot.io/api/run/${glotLanguage}/latest`,
             {
-                source_code: code,
-                language_id: langId,
+                files: [
+                    {
+                        name: fileNames[language],
+                        content: code
+                    }
+                ],
                 stdin: stdin
             },
             {
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-RapidAPI-Key': process.env.JUDGE0_API_KEY,
-                    'X-RapidAPI-Host': 'judge0-ce.p.rapidapi.com'
-                },
-                params: {
-                    base64_encoded: 'false',
-                    wait: 'false'
+                    'Authorization': `Token ${process.env.GLOT_API_TOKEN}`
                 }
             }
         )
 
-        const token = submitResponse.data.token
-        console.log('judge0 submission token:', token)
+        const data = response.data
 
-        let result = null
-        let attempts = 0
-        const maxAttempts = 10
-
-        while (attempts < maxAttempts) {
-            await new Promise((resolve) => setTimeout(resolve, 1000))
-
-            const resultResponse = await axios.get(
-                `${process.env.JUDGE0_URL}/submissions/${token}`,
-                {
-                    headers: {
-                        'X-RapidAPI-Key': process.env.JUDGE0_API_KEY,
-                        'X-RapidAPI-Host': 'judge0-ce.p.rapidapi.com'
-                    },
-                    params: {
-                        base64_encoded: 'false'
-                    }
-                }
-            )
-
-            result = resultResponse.data
-            console.log('judge0 status:', result.status.description)
-
-            if (result.status.id !== 1 && result.status.id !== 2) {
-                break
-            }
-
-            attempts++
-        }
-
-        if (!result) {
-            return res.status(500).json({ message: 'code execution timed out' })
-        }
-
-        res.json({
-            stdout: result.stdout || '',
-            stderr: result.stderr || '',
-            compile_output: result.compile_output || '',
-            status: result.status.description,
-            time: result.time,
-            memory: result.memory
+         res.json({
+            stdout: data.stdout || '',
+            stderr: data.stderr || data.error || '',
+            compile_output: '',
+            status: data.stderr || data.error ? 'Error' : 'Accepted'
         })
 
     } catch (err) {
