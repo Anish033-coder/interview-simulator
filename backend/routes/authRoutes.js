@@ -44,9 +44,11 @@ router.post('/register', async (req, res) => {
         )
 
         res.cookie('token', token, {
-            httpOnly: true,
-            maxAge: 7 * 24 * 60 * 60 * 1000
-        })
+    httpOnly: true,
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    secure: true,
+    sameSite: 'none'
+})
 
         res.status(201).json({
             message: 'account created successfully',
@@ -100,9 +102,11 @@ router.post('/login', async (req, res) => {
         )
 
         res.cookie('token', token, {
-            httpOnly: true,
-            maxAge: 7 * 24 * 60 * 60 * 1000
-        })
+    httpOnly: true,
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    secure: true,
+    sameSite: 'none'
+})
 
         res.json({
             message: 'logged in successfully',
@@ -120,8 +124,8 @@ router.post('/login', async (req, res) => {
 })
 
 
-/router.post('/logout', (req, res) => {
-    res.cookie('token', '', { httpOnly: true, maxAge: 0 })
+    router.post('/logout', (req, res) => {
+    res.cookie('token', '', { httpOnly: true, maxAge: 0, secure: true, sameSite: 'none' })
     res.json({ message: 'logged out successfully' })
 })
 
