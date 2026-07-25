@@ -1,7 +1,12 @@
-function OutputPanel({ output }) {
+// output panel component
+// shows two different things depending on what happened last:
+// 1. output from "Run Code" - just stdout/stderr from one run
+// 2. output from "Submit" - pass/fail for every test case
+
+function OutputPanel({ output, submitResult }) {
     return (
         <div style={{
-            height: '160px',
+            height: '200px',
             backgroundColor: 'var(--bg-secondary)',
             borderTop: '1px solid var(--border)',
             display: 'flex',
@@ -21,11 +26,11 @@ function OutputPanel({ output }) {
                     color: 'var(--text-secondary)',
                     fontSize: '12px'
                 }}>
-                    Output
+                    {submitResult ? 'Test Results' : 'Output'}
                 </span>
 
-                {/* show status badge if we have output */}
-                {output && (
+                {/* run code status badge */}
+                {output && !submitResult && (
                     <span style={{
                         backgroundColor: output.stderr || output.compile_output
                             ? '#2e0d0d'
@@ -40,62 +45,117 @@ function OutputPanel({ output }) {
                         {output.status}
                     </span>
                 )}
+
+                {/* submit pass count badge */}
+                {submitResult && (
+                    <span style={{
+                        backgroundColor: submitResult.passed === submitResult.total
+                            ? '#0d2e1f'
+                            : '#2e1f0d',
+                        color: submitResult.passed === submitResult.total
+                            ? '#34c97e'
+                            : '#f0a04a',
+                        padding: '2px 8px',
+                        borderRadius: '4px',
+                        fontSize: '11px',
+                        fontWeight: '600'
+                    }}>
+                        {submitResult.passed}/{submitResult.total} passed
+                    </span>
+                )}
             </div>
 
-            {/* output content */}
+            {/* content area */}
             <div style={{
                 flex: 1,
                 overflowY: 'auto',
-                padding: '10px 14px',
-                fontFamily: 'monospace',
-                fontSize: '12px'
+                padding: '10px 14px'
             }}>
 
-                {/* no output yet */}
-                {!output && (
-                    <p style={{ color: 'var(--text-secondary)' }}>
-                        click run code to see output here
+                {/* nothing run yet */}
+                {!output && !submitResult && (
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
+                        click run code to test with custom input, or submit to check against all test cases
                     </p>
                 )}
 
-                {/* stdout - normal output */}
-                {output && output.stdout && (
-                    <p style={{
-                        color: '#34c97e',
-                        whiteSpace: 'pre-wrap',
-                        margin: 0
-                    }}>
-                        {output.stdout}
-                    </p>
+                {/* --- RUN CODE VIEW --- */}
+                {output && !submitResult && (
+                    <div style={{ fontFamily: 'monospace', fontSize: '12px' }}>
+                        {output.stdout && (
+                            <p style={{ color: '#34c97e', whiteSpace: 'pre-wrap', margin: 0 }}>
+                                {output.stdout}
+                            </p>
+                        )}
+                        {output.compile_output && (
+                            <p style={{ color: '#f06a6a', whiteSpace: 'pre-wrap', margin: 0 }}>
+                                Compile Error:{'\n'}{output.compile_output}
+                            </p>
+                        )}
+                        {output.stderr && (
+                            <p style={{ color: '#f06a6a', whiteSpace: 'pre-wrap', margin: 0 }}>
+                                {output.stderr}
+                            </p>
+                        )}
+                        {!output.stdout && !output.stderr && !output.compile_output && (
+                            <p style={{ color: 'var(--text-secondary)' }}>no output</p>
+                        )}
+                    </div>
                 )}
 
-                {/* compile error */}
-                {output && output.compile_output && (
-                    <p style={{
-                        color: '#f06a6a',
-                        whiteSpace: 'pre-wrap',
-                        margin: 0
-                    }}>
-                        Compile Error:{'\n'}{output.compile_output}
-                    </p>
-                )}
+                {/* --- SUBMIT VIEW - one row per test case --- */}
+                {submitResult && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {submitResult.results.map((test) => (
+                            <div
+                                key={test.testCaseNumber}
+                                style={{
+                                    backgroundColor: 'var(--bg-card)',
+                                    border: `1px solid ${test.passed ? '#34c97e33' : '#f06a6a33'}`,
+                                    borderRadius: '6px',
+                                    padding: '8px 10px'
+                                }}
+                            >
+                                <div style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    marginBottom: test.passed ? '0' : '4px'
+                                }}>
+                                    <span style={{
+                                        color: 'var(--text-primary)',
+                                        fontSize: '12px',
+                                        fontWeight: '500'
+                                    }}>
+                                        Test Case {test.testCaseNumber}
+                                    </span>
+                                    <span style={{
+                                        color: test.passed ? '#34c97e' : '#f06a6a',
+                                        fontSize: '11px',
+                                        fontWeight: '600'
+                                    }}>
+                                        {test.passed ? '✓ Passed' : '✗ Failed'}
+                                    </span>
+                                </div>
 
-                {/* runtime error */}
-                {output && output.stderr && (
-                    <p style={{
-                        color: '#f06a6a',
-                        whiteSpace: 'pre-wrap',
-                        margin: 0
-                    }}>
-                        {output.stderr}
-                    </p>
-                )}
-
-                {/* accepted with no output */}
-                {output && !output.stdout && !output.stderr && !output.compile_output && (
-                    <p style={{ color: 'var(--text-secondary)' }}>
-                        no output
-                    </p>
+                                {/* only show details when a test fails, keeps passed ones clean */}
+                                {!test.passed && (
+                                    <div style={{
+                                        fontFamily: 'monospace',
+                                        fontSize: '11px',
+                                        color: 'var(--text-secondary)',
+                                        marginTop: '4px'
+                                    }}>
+                                        <div>Expected: <span style={{ color: '#34c97e' }}>{test.expectedOutput}</span></div>
+                                        <div>Got: <span style={{ color: '#f06a6a' }}>{test.actualOutput || '(empty)'}</span></div>
+                                        {test.stderr && (
+                                            <div style={{ marginTop: '2px' }}>Error: {test.stderr}</div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
                 )}
             </div>
         </div>

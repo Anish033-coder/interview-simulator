@@ -42,6 +42,8 @@ function Interview() {
     const [code, setCode] = useState(starterCode['python'])
     const [output, setOutput] = useState(null)
     const [runningCode, setRunningCode] = useState(false)
+    const [submitResult, setSubmitResult] = useState(null)
+    const [submitting, setSubmitting] = useState(false)
     const [aiMessages, setAiMessages] = useState([])
     const [askingAI, setAskingAI] = useState(false)
     const [sessionEnded, setSessionEnded] = useState(false)
@@ -80,6 +82,7 @@ function Interview() {
         if (!code.trim()) return
         setRunningCode(true)
         setOutput(null)
+        setSubmitResult(null)
 
         try {
             const res = await api.post('/api/execute', {
@@ -95,6 +98,25 @@ function Interview() {
             setRunningCode(false)
         }
     }
+    async function handleSubmit() {
+    if (!code.trim() || !problem) return
+    setSubmitting(true)
+    setOutput(null)         
+    setSubmitResult(null)
+
+    try {
+        const res = await api.post('/api/execute/submit', {
+            code: code,
+            language: language,
+            problemId: problem.id
+        })
+        setSubmitResult(res.data)
+    } catch (err) {
+        console.log('submit error:', err.message)
+    } finally {
+        setSubmitting(false)
+    }
+   }
 
     async function handleAskAI() {
         if (!code.trim() || !problem) return
@@ -140,8 +162,8 @@ function Interview() {
                 sessionId: sessionId,
                 finalCode: code,
                 timeTaken: timeTaken,
-                testCasesPassed: output?.status === 'Accepted' ? 1 : 0,
-                testCasesTotal: 1
+                testCasesPassed: submitResult ? submitResult.passed : 0,
+                testCasesTotal: submitResult ? submitResult.total : 0
             })
 
             setSessionEnded(true)
@@ -257,6 +279,21 @@ function Interview() {
                     >
                         {runningCode ? 'running...' : '▶ Run Code'}
                     </button>
+                    <button
+                          onClick={handleSubmit}
+                           disabled={submitting}
+                          style={{
+                           backgroundColor: '#5b6af022',
+                           border: '1px solid #5b6af055',
+                           color: '#5b6af0',
+                           padding: '6px 14px',
+                           borderRadius: '5px',
+                           fontSize: '12px',
+                           cursor: 'pointer'
+                           }}                   
+                          >
+                              {submitting ? 'checking...' : 'Submit'}
+                          </button>
                     <button
                         onClick={handleEndSession}
                         style={{
@@ -385,7 +422,7 @@ function Interview() {
                         onCodeChange={setCode}
                         onLanguageChange={handleLanguageChange}
                     />
-                    <OutputPanel output={output} />
+                    <OutputPanel output={output} submitResult={submitResult} />
                 </div>
 
                 {/* right panel - ai chat */}
