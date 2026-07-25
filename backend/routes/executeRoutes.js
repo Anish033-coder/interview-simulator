@@ -66,7 +66,7 @@ router.post('/', async (req, res) => {
             stdout: data.stdout || '',
             stderr: data.stderr || data.error || '',
             compile_output: '',
-            status: data.stderr || data.error ? 'Error' : 'Accepted'
+            status: data.stderr || data.error ? 'Error' : 'Executed'
         })
 
     } catch (err) {
