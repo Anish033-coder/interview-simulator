@@ -182,11 +182,12 @@ All error responses follow this shape:
 | GET | `/api/problems` | No | Get all problems (title, difficulty, topic) |
 | GET | `/api/problems/:id` | No | Get full problem with examples and test cases |
 
-### Execute Endpoint
+### Execute Endpoints
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| POST | `/api/execute` | No | Run code via glot.io, returns stdout/stderr |
+| POST | `/api/execute` | No | Run code via glot.io with custom stdin, returns raw stdout/stderr |
+| POST | `/api/execute/submit` | No | Run code against every test case for a problem, returns pass/fail per case |
 
 ### AI Endpoints
 
@@ -204,7 +205,7 @@ All error responses follow this shape:
 | GET | `/api/sessions/report/:sessionId` | Yes | Full report — session + problem + AI messages |
 | GET | `/api/sessions/history` | Yes | All past sessions for logged in user |
 
-#### Example: Execute Request
+#### Example: Execute Request (Run Code)
 
 ```http
 POST /api/execute
@@ -214,6 +215,43 @@ Content-Type: application/json
   "code": "print('hello world')",
   "language": "python",
   "stdin": ""
+}
+```
+
+**Success Response — 200:**
+
+```json
+{
+  "stdout": "hello world\n",
+  "stderr": "",
+  "status": "Executed"
+}
+```
+
+Note the `status` field says `Executed`, not `Accepted` — Run Code only confirms the program ran without crashing. It does not check correctness. That check only happens through Submit.
+
+#### Example: Submit Request (Check Against Test Cases)
+
+```http
+POST /api/execute/submit
+Content-Type: application/json
+
+{
+  "problemId": 1,
+  "language": "python",
+  "code": "import sys, json\nlines = sys.stdin.read().split(chr(10))\nnums = json.loads(lines[0])\ntarget = int(lines[1])\nfor i in range(len(nums)):\n    for j in range(i+1, len(nums)):\n        if nums[i] + nums[j] == target:\n            print(f\"[{i},{j}]\")"
+}
+```
+
+**Success Response — 200:**
+
+```json
+{
+  "results": [
+    { "testCaseNumber": 1, "input": "[2,7,11,15]\n9", "expectedOutput": "[0,1]", "actualOutput": "[0,1]", "passed": true, "stderr": "" }
+  ],
+  "passed": 3,
+  "total": 3
 }
 ```
 
@@ -314,6 +352,70 @@ Rules you MUST follow:
 
 This prompt took multiple iterations to get right. Early versions either gave away the answer or asked generic questions completely unrelated to the code. The strict "one question" rule ensures the AI drives a natural conversation without overwhelming the user.
 ---
+
+## ✅ Automated Test Runner
+
+The Submit button runs the candidate's code against every test case stored for a problem, not just one custom input. This is what turns InterviewForge from a code editor with a chat panel into an actual judge.
+
+For each test case, the backend calls glot.io with that test case's specific input, then compares the trimmed output against the trimmed expected output:
+
+```js
+const actualOutput = (data.stdout || '').trim()
+const expectedOutput = (testCase.expected_output || '').trim()
+const passed = actualOutput === expectedOutput
+```
+
+`.trim()` matters here — without it, a correct solution that happens to print a trailing newline or space would incorrectly fail, since glot.io's raw stdout often includes exactly that kind of formatting difference that has nothing to do with whether the logic is right.
+
+Test cases run sequentially, one at a time, rather than all at once with `Promise.all`. This was a deliberate choice, not an oversight — firing every test case simultaneously risks tripping glot.io's free-tier rate limits, especially on problems with more test cases. Sequential execution is slower but far more reliable on a free-tier external dependency.
+
+---
+
+## 🧪 Automated Testing (Jest + Supertest)
+
+Every route that has meaningful logic to get wrong — not just CRUD — has integration test coverage using Jest and Supertest. This closes a gap that existed through most of Phase 1: the Ledger project had tests from the start, InterviewForge didn't.
+
+```
+tests/
+├── execute.test.js   → status labeling (Executed vs Error), input validation
+├── submit.test.js    → pass/fail comparison logic against known expected output
+└── session.test.js   → session ownership checks, correct data persisted on end
+```
+
+External dependencies are mocked rather than called for real during tests:
+
+```js
+jest.mock('axios')
+jest.spyOn(pool, 'query')
+```
+
+This means the test suite runs in about 3 seconds, doesn't touch the real database or glot.io, and still passes even if glot.io itself is down.
+
+**A real structural change this required:** `server.js` originally both built the Express app and called `app.listen()` to start it. Supertest needs to import the app without binding it to a real port, so the app construction was split into its own `app.js`, and `server.js` now just imports it and starts listening:
+
+```js
+
+const app = express()
+
+module.exports = app
+
+const app = require('./app')
+app.listen(PORT, () => console.log('server started'))
+```
+
+**One real bug this testing work caught along the way:** the connection pool in `config/db.js` opens the moment the file is required and was never explicitly closed. Every test run left that pool open in the background, which caused Jest to hang after tests finished and eventually crash. The fix was a standard `afterAll` hook closing the pool once all tests in a file complete:
+
+```js
+afterAll(async () => {
+    await pool.end()
+})
+```
+
+Run the suite:
+
+```bash
+npm test
+```
 
 ## 🚀 Local Setup
 
@@ -424,22 +526,27 @@ interview-simulator/
 │
 ├── backend/
 │   ├── config/
-│   │   └── db.js                 
+│   │   └── db.js
 │   ├── middleware/
-│   │   └── auth.js               
+│   │   └── auth.js
 │   ├── routes/
-│   │   ├── authRoutes.js         
-│   │   ├── problemRoutes.js      
+│   │   ├── authRoutes.js
+│   │   ├── problemRoutes.js
 │   │   ├── executeRoutes.js       
-│   │   ├── aiRoutes.js            
-│   │   └── sessionRoutes.js     
+│   │   ├── aiRoutes.js
+│   │   └── sessionRoutes.js
 │   ├── db/
-│   │   └── seed.js                
-│   ├── tmp/                       
-│   ├── .env                   
+│   │   └── seed.js
+│   ├── tests/
+│   │   ├── execute.test.js
+│   │   ├── submit.test.js
+│   │   └── session.test.js
+│   ├── tmp/
+│   ├── .env
 │   ├── .gitignore
 │   ├── package.json
-│   └── server.js        
+│   ├── app.js                     
+│   └── server.js                    
 │
 └── frontend/
     ├── public/
@@ -507,15 +614,11 @@ Both platforms auto-deploy on every push to the main branch.
 
 - **Polling over WebSockets** — AI responses are fetched via standard HTTP requests rather than WebSockets. This was a deliberate tradeoff to keep deployment simple — Render and Vercel handle HTTP flawlessly, while WebSockets require persistent connections and additional infrastructure. For a portfolio project, the marginal UX gain of real-time streaming didn't justify the deployment complexity.
 
-- **No automated test runner** — users run code manually with custom stdin. A Submit button that loops through all test cases and shows "7/10 passed" is the highest priority next feature. Without it, the platform cannot verify solution correctness automatically.
+- **No Redis cache** — every code execution hits glot.io directly. In production, we would hash `code + language + stdin` with SHA256 and cache results in Redis, reducing glot.io API calls significantly for repeated or identical submissions.
 
-- **No Redis cache** — every code execution hits glot.io directly. In production, we would hash `code + language + stdin` with SHA256 and cache results in Redis, reducing glot.io API calls by roughly 80% for repeated submissions.
+- **No weakness tracking across sessions** — session data is saved but not analyzed. A future version would add a recency-weighted scoring algorithm that detects patterns like "accuracy on DP drops in the last 10 minutes of a session."
 
-- **glot.io free tier limits** — under heavy concurrent use, the execution service may return 429. Phase 2 will add `express-rate-limit` on the execute route and a friendly retry message when the service is busy.
-
-- **No weakness tracking across sessions** — session data is saved but not analyzed. Phase 2 will add a recency-weighted scoring algorithm that detects patterns like "accuracy on DP drops in the last 10 minutes of a session."
-
-- **Theme preference not persisted** — the dark/light toggle resets on page refresh. Persisting it to `localStorage` is a small fix intentionally left out of Phase 1 scope.
+- **Theme preference not persisted** — the dark/light toggle resets on page refresh. Persisting it to `localStorage` is a small fix intentionally left out of scope so far.
 
 ---
 
@@ -528,6 +631,7 @@ Both platforms auto-deploy on every push to the main branch.
 - How to proxy external APIs (glot.io, Gemini) through an Express backend instead of calling them directly from the frontend — keeps API keys server-side and gives you a single place to add rate limiting or error handling later.
 - How real code execution APIs work — the difference between submission (get a token) and polling (use the token to fetch the result).
 - How CORS works in practice — not just the theory but the specific combination of `credentials: true` on axios, `credentials: true` on the CORS middleware, and the exact allowed-origins array that makes it work in production.
+- How to structure an Express app for testability — separating app construction from `app.listen()` so Supertest can import the app directly without binding a real port  — and why an unclosed database connection pool causes Jest to hang after tests finish, not during them.
 
 ---
 
