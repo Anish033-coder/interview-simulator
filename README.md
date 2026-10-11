@@ -36,6 +36,8 @@ A full-stack mock interview platform that simulates what actually happens in a r
 | **Backend API** | [API Endpoint](https://interview-simulator-backend-ahh8.onrender.com) |
 | **Health Check** | [Health Status](https://interview-simulator-backend-ahh8.onrender.com/api/health) |
 
+> The backend runs on Render's free tier and sleeps when idle, so the first load takes about 30 seconds. After that it responds normally.
+
 ---
 
 ## 🎯 The Problem It Solves
