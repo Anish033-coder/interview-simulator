@@ -5,6 +5,11 @@ const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
 const pool = require('../config/db')
 require('dotenv').config()
+const cookieOptions = () => ({
+    httpOnly: true,
+    secure: process.env.NODE_ENV !== 'development',
+    sameSite: process.env.NODE_ENV === 'development' ? 'lax' : 'none'
+})
 
 
 router.post('/register', async (req, res) => {
@@ -44,10 +49,8 @@ router.post('/register', async (req, res) => {
         )
 
         res.cookie('token', token, {
-    httpOnly: true,
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-    secure: true,
-    sameSite: 'none'
+    ...cookieOptions(),
+    maxAge: 7 * 24 * 60 * 60 * 1000
 })
 
         res.status(201).json({
@@ -63,7 +66,7 @@ router.post('/register', async (req, res) => {
     console.error(err);
 
     res.status(500).json({
-        message: err.message
+        message: 'something went wrong'
     });
 }
 })
@@ -102,10 +105,8 @@ router.post('/login', async (req, res) => {
         )
 
         res.cookie('token', token, {
-    httpOnly: true,
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-    secure: true,
-    sameSite: 'none'
+    ...cookieOptions(),
+    maxAge: 7 * 24 * 60 * 60 * 1000
 })
 
         res.json({
@@ -125,7 +126,7 @@ router.post('/login', async (req, res) => {
 
 
     router.post('/logout', (req, res) => {
-    res.cookie('token', '', { httpOnly: true, maxAge: 0, secure: true, sameSite: 'none' })
+    res.cookie('token', '', { ...cookieOptions(), maxAge: 0 })
     res.json({ message: 'logged out successfully' })
 })
 

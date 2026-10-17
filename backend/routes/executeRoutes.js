@@ -35,6 +35,7 @@ async function runOnGlot(code, language, stdin) {
             stdin: stdin
         },
         {
+            timeout: 10000,
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Token ${process.env.GLOT_API_TOKEN}`
@@ -51,11 +52,11 @@ router.post('/', async (req, res) => {
     const language = req.body.language
     const stdin = req.body.stdin || ''
 
-    if (!code || !language) {
+    if (typeof code !== 'string' || !code.trim() || typeof language !== 'string' || typeof stdin !== 'string') {
         return res.status(400).json({ message: 'code and language are required' })
     }
 
-    if (!languageMap[language]) {
+    if (!Object.hasOwn(languageMap, language)) {
         return res.status(400).json({ message: 'unsupported language' })
     }
 
@@ -70,6 +71,7 @@ router.post('/', async (req, res) => {
         })
 
     } catch (err) {
+        if (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT') return res.status(504).json({ message: 'code execution timed out' })
         console.log('execute error:', err.message)
         res.status(500).json({ message: 'something went wrong with code execution' })
     }
@@ -81,11 +83,11 @@ router.post('/submit', async (req, res) => {
     const language = req.body.language
     const problemId = req.body.problemId
 
-    if (!code || !language || !problemId) {
+    if (typeof code !== 'string' || !code.trim() || typeof language !== 'string' || !['string', 'number'].includes(typeof problemId) || !/^[1-9]\d*$/.test(String(problemId)) || !Number.isSafeInteger(Number(problemId))) {
         return res.status(400).json({ message: 'code, language and problemId are required' })
     }
 
-    if (!languageMap[language]) {
+    if (!Object.hasOwn(languageMap, language)) {
         return res.status(400).json({ message: 'unsupported language' })
     }
 
@@ -112,7 +114,7 @@ router.post('/submit', async (req, res) => {
             const actualOutput = (data.stdout || '').trim()
             const expectedOutput = (testCase.expected_output || '').trim()
 
-            const passed = actualOutput === expectedOutput
+            const passed = !data.error && !data.stderr && actualOutput === expectedOutput
 
             if (passed) {
                 passedCount++
@@ -135,6 +137,7 @@ router.post('/submit', async (req, res) => {
         })
 
     } catch (err) {
+        if (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT') return res.status(504).json({ message: 'code execution timed out' })
         console.log('submit error:', err.message)
         res.status(500).json({ message: 'something went wrong while checking your solution' })
     }

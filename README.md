@@ -68,6 +68,16 @@ LeetCode does not simulate any of that:
 - Dark and light theme toggle via CSS variables
 - Fully deployed — Vercel frontend, Render backend, Neon PostgreSQL
 
+### Phase 2 — Reliability Fixes
+
+- Code execution calls give up after 10 seconds and return a clear "timed out" message instead of hanging
+- A submission only passes when the program runs cleanly (no crash, nothing on stderr) and the output matches
+- Stricter input checks on run and submit requests: field types, supported languages, valid problem IDs
+- A local development mode with localhost-friendly cookies, while production keeps secure cross-site cookies
+- Registration errors no longer leak internal error messages to the browser
+- One-command database setup (`npm run db:setup`) from `db/schema.sql`
+- GitHub Actions runs the backend tests and a frontend build on every push
+
 ---
 
 ## 🛠 Tech Stack
@@ -191,6 +201,8 @@ All error responses follow this shape:
 | POST | `/api/execute` | No | Run code via glot.io with custom stdin, returns raw stdout/stderr |
 | POST | `/api/execute/submit` | No | Run code against every test case for a problem, returns pass/fail per case |
 
+Both execute endpoints return `400` for missing or wrongly typed fields and unsupported languages, and `504` with `code execution timed out` if glot.io doesn't answer within 10 seconds.
+
 ### AI Endpoints
 
 | Method | Endpoint | Auth | Description |
@@ -257,13 +269,13 @@ Content-Type: application/json
 }
 ```
 
-**Success Response — 200:**
+**Run Code response when the program crashes — 200:**
 
 ```json
 {
-  "stdout": "hello world\n",
-  "stderr": "",
-  "status": "Accepted"
+  "stdout": "",
+  "stderr": "Traceback (most recent call last): ...",
+  "status": "Error"
 }
 ```
 
@@ -300,15 +312,18 @@ Storing JWT tokens in `localStorage` exposes them to XSS attacks — any injecte
 This required specific configuration for cross-domain use since the frontend (Vercel) and backend (Render) are on different domains:
 
 ```js
-res.cookie('token', token, {
+const cookieOptions = () => ({
     httpOnly: true,
-    secure: true,       // only sent over HTTPS
-    sameSite: 'none',   // allows cross-domain sending
-    maxAge: 7 * 24 * 60 * 60 * 1000
+    secure: process.env.NODE_ENV !== 'development',                 // HTTPS only, except local dev
+    sameSite: process.env.NODE_ENV === 'development' ? 'lax' : 'none' // cross-domain in production
 })
+
+res.cookie('token', token, { ...cookieOptions(), maxAge: 7 * 24 * 60 * 60 * 1000 })
 ```
 
 Without `sameSite: 'none'` and `secure: true`, the browser silently drops the cookie on cross-domain requests and every protected route returns 401.
+
+Running everything on my laptop is the opposite case: frontend and backend both sit on `localhost` over plain HTTP, where a `secure` cookie never gets set. So when `NODE_ENV=development` the cookie switches to `secure: false` and `sameSite: 'lax'`, and anywhere else it keeps the strict cross-domain settings. Logout clears the cookie with the same options, otherwise the browser wouldn't actually remove it.
 
 ### Why glot.io instead of Judge0?
 
@@ -337,19 +352,19 @@ The core of the platform is the prompt sent to Gemini. Getting this right took i
 The final prompt structure is engineered to enforce strict interviewer behavior:
 
 ```
-You are a senior software engineer conducting a DSA interview.
-You are interviewing a candidate for the problem: [PROBLEM_TITLE]
-Problem Description: [PROBLEM_DESCRIPTION]
+You are a senior software engineer conducting a technical interview.
 
-Here is the candidate's current code:
+The candidate is solving this problem:
+Problem: [PROBLEM_TITLE]
+Description: [PROBLEM_DESCRIPTION]
+
+This is their current code:
 [USER_CODE]
 
-Rules you MUST follow:
-1. Ask EXACTLY ONE follow-up question. Do not ask multiple questions.
-2. NEVER provide the solution code or complete the implementation.
-3. Focus on: time/space complexity, edge cases, or alternative approaches.
-4. Keep your response to 2-3 sentences max.
-5. If the code is clearly wrong, gently guide them toward the bug without fixing it.
+Your job is to ask ONE short follow-up question about their code.
+Focus on time complexity, space complexity, or edge cases.
+Never give away the answer or suggest improvements directly.
+Just ask one question, nothing else. No greeting, no explanation.
 ```
 
 This prompt took multiple iterations to get right. Early versions either gave away the answer or asked generic questions completely unrelated to the code. The strict "one question" rule ensures the AI drives a natural conversation without overwhelming the user.
@@ -364,12 +379,14 @@ For each test case, the backend calls glot.io with that test case's specific inp
 ```js
 const actualOutput = (data.stdout || '').trim()
 const expectedOutput = (testCase.expected_output || '').trim()
-const passed = actualOutput === expectedOutput
+const passed = !data.error && !data.stderr && actualOutput === expectedOutput
 ```
 
 `.trim()` matters here — without it, a correct solution that happens to print a trailing newline or space would incorrectly fail, since glot.io's raw stdout often includes exactly that kind of formatting difference that has nothing to do with whether the logic is right.
 
-Test cases run sequentially, one at a time, rather than all at once with `Promise.all`. This was a deliberate choice, not an oversight — firing every test case simultaneously risks tripping glot.io's free-tier rate limits, especially on problems with more test cases. Sequential execution is slower but far more reliable on a free-tier external dependency.
+The `!data.error && !data.stderr` part came later, after I spotted a hole: a program could print the right answer and then crash (an exception right after the `print`, say), and it still counted as a pass because only stdout was compared. Now a test case passes only if the program ran cleanly. The trade-off is that anything on stderr, even a harmless warning, counts as a failure.
+
+Test cases run sequentially, one at a time, rather than all at once with `Promise.all`. This was a deliberate choice, not an oversight — firing every test case simultaneously risks tripping glot.io's free-tier rate limits, especially on problems with more test cases. Sequential execution is slower but far more reliable on a free-tier external dependency. Each glot.io call also has a 10-second timeout, so one stuck request can't hold a submission open forever.
 
 ---
 
@@ -379,9 +396,11 @@ Every route that has meaningful logic to get wrong — not just CRUD — has int
 
 ```
 tests/
-├── execute.test.js   → status labeling (Executed vs Error), input validation
-├── submit.test.js    → pass/fail comparison logic against known expected output
-└── session.test.js   → session ownership checks, correct data persisted on end
+├── execute.test.js                → status labeling (Executed vs Error), input validation
+├── submit.test.js                 → pass/fail comparison logic against known expected output
+├── session.test.js                → session ownership checks, correct data persisted on end
+└── execution-regressions.test.js  → crash-after-output isn't a pass, `constructor`-style language names,
+                                     504 on timeouts, wrongly typed input
 ```
 
 External dependencies are mocked rather than called for real during tests:
@@ -391,7 +410,7 @@ jest.mock('axios')
 jest.spyOn(pool, 'query')
 ```
 
-This means the test suite runs in about 3 seconds, doesn't touch the real database or glot.io, and still passes even if glot.io itself is down.
+This means the test suite (22 tests across 4 files) runs in under a second, doesn't touch the real database or glot.io, and still passes even if glot.io itself is down.
 
 **A real structural change this required:** `server.js` originally both built the Express app and called `app.listen()` to start it. Supertest needs to import the app without binding it to a real port, so the app construction was split into its own `app.js`, and `server.js` now just imports it and starts listening:
 
@@ -413,11 +432,15 @@ afterAll(async () => {
 })
 ```
 
+Later I went one step further: `config/db.js` no longer opens a test connection the moment it's loaded. The `pg` pool connects lazily, the first time a route actually runs a query, so importing the app in a test doesn't reach for the database at all.
+
 Run the suite:
 
 ```bash
 npm test
 ```
+
+Jest and Supertest are listed in `devDependencies`, so `npm ci && npm test` works on a fresh clone. GitHub Actions runs the same suite, plus a frontend build, on every push.
 
 ## 🚀 Local Setup
 
@@ -440,30 +463,35 @@ npm install
 
 2. **Configure environment**
 
-Create a `.env` file inside the `backend` folder:
+Create a `.env` file inside the `backend` folder (or copy `.env.example`):
+
+```
+NODE_ENV=development
 PORT=5000
-
+FRONTEND_URL=http://localhost:5173
 DATABASE_URL=your_postgresql_connection_string
-
 JWT_SECRET=any_long_random_string
-
 GEMINI_API_KEY=your_gemini_api_key
-
 GLOT_API_TOKEN=your_glot_api_token
+```
+
+`NODE_ENV=development` turns on the localhost-friendly cookie settings described above.
 
 3. **Create database tables**
 
-Run the SQL from the Database Schema section above in your PostgreSQL client or Neon SQL editor.
+```bash
+npm run db:setup
+```
+
+This runs `db/schema.sql`, which creates the four tables from the Database Schema section above. It's meant for a fresh database; you can also paste the same SQL into your PostgreSQL client or the Neon SQL editor.
 
 4. **Seed the problem bank**
 
 ```bash
-node db/seed.js
+node db/seed.js      # or: npm run db:seed
 ```
 
 You should see:
-database connected
-
 seeding problems...
 
 inserted: Two Sum
@@ -487,7 +515,7 @@ all problems seeded successfully
 5. **Start the server**
 
 ```bash
-node server.js
+node server.js       # or: npm start, or npm run dev to restart on file changes
 ```
 
 Server runs at `http://localhost:5000`
@@ -508,6 +536,8 @@ npm install
 echo "VITE_API_URL=http://localhost:5000" > .env
 ```
 
+`frontend/.env.example` shows the same setting.
+
 > Important: The frontend expects `VITE_API_URL` to point to the backend. Without this, all API calls fail with CORS errors.
 
 3. **Start the dev server**
@@ -525,6 +555,9 @@ Frontend runs at `http://localhost:5173`
 ```
 interview-simulator/
 ├── README.md
+├── .github/
+│   └── workflows/
+│       └── checks.yml
 │
 ├── backend/
 │   ├── config/
@@ -534,47 +567,49 @@ interview-simulator/
 │   ├── routes/
 │   │   ├── authRoutes.js
 │   │   ├── problemRoutes.js
-│   │   ├── executeRoutes.js       
+│   │   ├── executeRoutes.js
 │   │   ├── aiRoutes.js
 │   │   └── sessionRoutes.js
 │   ├── db/
+│   │   ├── schema.sql
+│   │   ├── setup.js
 │   │   └── seed.js
 │   ├── tests/
 │   │   ├── execute.test.js
 │   │   ├── submit.test.js
-│   │   └── session.test.js
-│   ├── tmp/
-│   ├── .env
+│   │   ├── session.test.js
+│   │   └── execution-regressions.test.js
+│   ├── .env.example
 │   ├── .gitignore
 │   ├── package.json
-│   ├── app.js                     
-│   └── server.js                    
+│   ├── package-lock.json
+│   ├── app.js
+│   └── server.js
 │
 └── frontend/
-    ├── public/
-    │   └── index.html
     ├── src/
     │   ├── api/
-    │   │   └── axios.js           
+    │   │   └── axios.js
     │   ├── context/
-    │   │   └── AuthContext.jsx   
+    │   │   └── AuthContext.jsx
     │   ├── components/
-    │   │   ├── Navbar.jsx       
-    │   │   ├── Timer.jsx          
-    │   │   ├── CodeEditor.jsx     
-    │   │   ├── AIPanel.jsx        
-    │   │   └── OutputPanel.jsx    
+    │   │   ├── Navbar.jsx
+    │   │   ├── Timer.jsx
+    │   │   ├── CodeEditor.jsx
+    │   │   ├── AIPanel.jsx
+    │   │   └── OutputPanel.jsx
     │   ├── pages/
     │   │   ├── Login.jsx
     │   │   ├── Register.jsx
-    │   │   ├── Home.jsx          
-    │   │   ├── Interview.jsx      
-    │   │   └── Report.jsx         
-    │   ├── App.jsx               
-    │   ├── main.jsx             
-    │   └── index.css            
-    ├── vercel.json               
-    ├── .env
+    │   │   ├── Home.jsx
+    │   │   ├── Interview.jsx
+    │   │   └── Report.jsx
+    │   ├── App.jsx
+    │   ├── main.jsx
+    │   └── index.css
+    ├── index.html
+    ├── vercel.json
+    ├── .env.example
     ├── .gitignore
     └── package.json
 ```
@@ -608,7 +643,7 @@ Environment variables set directly in Render dashboard — never committed to gi
 }
 ```
 
-Both platforms auto-deploy on every push to the main branch.
+Both platforms auto-deploy on every push to the main branch, and GitHub Actions runs the backend tests and a frontend build on every push too.
 
 ---
 
@@ -622,6 +657,14 @@ Both platforms auto-deploy on every push to the main branch.
 
 - **Theme preference not persisted** — the dark/light toggle resets on page refresh. Persisting it to `localStorage` is a small fix intentionally left out of scope so far.
 
+Still on my list (these aren't intentional, just not done yet):
+
+- **Open code execution endpoints** — `/api/execute` and `/api/execute/submit` don't require login and have no per-user quota yet, so they lean on glot.io's own limits.
+- **No CSRF protection** — auth uses cross-site cookies (`sameSite: 'none'`). CORS limits which sites can read responses, but there's no CSRF token or origin check on requests that change data.
+- **Session scores come from the browser** — the report stores the pass count the frontend sends; the server doesn't re-run the tests to confirm it.
+- **Strict text comparison** — outputs are compared as trimmed text, and any stderr output fails a test case, even a harmless warning.
+- **Dependency updates pending** — `npm audit` reports advisories in a few packages (such as `axios`, `body-parser` and `qs`) that still need upgrading.
+
 ---
 
 ## 📚 What I Learned Building This
@@ -634,13 +677,16 @@ Both platforms auto-deploy on every push to the main branch.
 - How real code execution APIs work — the difference between submission (get a token) and polling (use the token to fetch the result).
 - How CORS works in practice — not just the theory but the specific combination of `credentials: true` on axios, `credentials: true` on the CORS middleware, and the exact allowed-origins array that makes it work in production.
 - How to structure an Express app for testability — separating app construction from `app.listen()` so Supertest can import the app directly without binding a real port  — and why an unclosed database connection pool causes Jest to hang after tests finish, not during them.
+- Why every call to an external API needs a timeout — without one, a slow glot.io response could keep a request open indefinitely.
+- That stdout alone isn't enough to judge a solution; whether the program crashed matters just as much.
+- How a plain lookup like `languageMap[language]` can be fooled by names such as `constructor`, and why `Object.hasOwn` is the safer check.
 
 ---
 
 ## 👤 Author
 
 **Anish Kumawat**
-2nd Year CSE — IIIT Lucknow
+3rd Year CSE — IIIT Lucknow
 
 ---
 
